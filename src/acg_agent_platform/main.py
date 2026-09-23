@@ -18,9 +18,19 @@ from starlette.responses import Response
 
 from acg_agent_platform.config import Provider, Settings
 from acg_agent_platform.models.approval import ApprovalRequest, NewTicket, Proposal
+from acg_agent_platform.models.business import InfrastructureRequest, InvoiceRequest
+from acg_agent_platform.models.platform import (
+    AgentProfile,
+    AgentRevision,
+    ExtractDocument,
+    PolicyProbe,
+    SourceInput,
+)
 from acg_agent_platform.models.records import Principal, Source, Ticket
 from acg_agent_platform.models.workflow import Run, StartRun
 from acg_agent_platform.services.approvals import Approvals, Conflict, Forbidden
+from acg_agent_platform.services.content_policy import indicators
+from acg_agent_platform.services.documents import extract_document
 from acg_agent_platform.services.gateway import (
     BaseModelAdapter,
     BasePolicy,
@@ -28,6 +38,7 @@ from acg_agent_platform.services.gateway import (
     InternalOnlyPolicy,
 )
 from acg_agent_platform.services.ollama import OllamaModel
+from acg_agent_platform.services.platform import TOOL_CATALOG, Platform
 from acg_agent_platform.services.store import AccessDenied, Store
 from acg_agent_platform.services.workflow import Workflow
 
@@ -43,11 +54,17 @@ def create_app(
     settings = settings or Settings()
     store = Store(settings.database_path)
     adapter = model or (
-        OllamaModel(settings.ollama_url, settings.ollama_model, settings.model_timeout)
-        if settings.model_provider == Provider.OLLAMA
+        OllamaModel(
+            settings.ollama_url,
+            settings.ollama_model,
+            settings.model_timeout,
+            openai_compatible=settings.model_provider == Provider.OPENAI_COMPATIBLE,
+        )
+        if settings.model_provider in (Provider.OLLAMA, Provider.OPENAI_COMPATIBLE)
         else FakeModel()
     )
     approvals = Approvals(settings.database_path, settings.approval_seconds)
+    platform = Platform(store)
     workflow = Workflow(
         store,
         settings,
@@ -62,7 +79,7 @@ def create_app(
 
     app = FastAPI(
         title="ACG synthetic control demonstrator",
-        version="0.2.0",
+        version="0.4.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -154,6 +171,116 @@ def create_app(
     def me(principal: Annotated[Principal, Depends(authenticate)]) -> Principal:
         return principal
 
+    @app.get("/api/platform")
+    def platform_status(
+        principal: Annotated[Principal, Depends(authenticate)],
+    ) -> dict[str, object]:
+        return {
+            "framework": "LangGraph",
+            "version": "0.4.0",
+            "tools": TOOL_CATALOG,
+            "templates": [
+                item.model_dump(mode="json") for item in platform.profiles(principal)
+            ],
+            "model": adapter.name,
+            "processing": "local-only",
+            "production_ready": False,
+            "connectors": {
+                "tickets": "local SQLite",
+                "knowledge": "reviewer-published local records",
+                "enterprise_identity": "not connected",
+                "ERP": "not connected",
+                "Microsoft365": "not connected",
+                "DLP_SIEM": "not connected",
+            },
+        }
+
+    @app.get("/api/monitoring")
+    def monitoring(
+        principal: Annotated[Principal, Depends(authenticate)],
+    ) -> dict[str, object]:
+        return platform.monitoring(principal)
+
+    @app.get("/api/search")
+    def search(
+        principal: Annotated[Principal, Depends(authenticate)],
+        q: str = "",
+        source_type: str = "all",
+    ) -> tuple[Source, ...]:
+        if not 1 <= len(q) <= 200 or source_type not in {
+            "all",
+            "document",
+            "incident",
+            "log",
+            "email",
+            "wiki",
+            "business",
+        }:
+            raise HTTPException(422, "Invalid search parameters")
+        return tuple(
+            s
+            for s in store.all_sources(principal)
+            if (source_type == "all" or s.source_type == source_type)
+            and q.casefold() in (s.title + " " + s.content).casefold()
+        )[:50]
+
+    @app.put("/api/agents", response_model=AgentRevision)
+    def configure_agent(
+        body: AgentProfile, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> AgentRevision:
+        return platform.configure(principal, body)
+
+    @app.get("/api/sources", response_model=tuple[Source, ...])
+    def list_sources(
+        principal: Annotated[Principal, Depends(authenticate)],
+    ) -> tuple[Source, ...]:
+        return store.all_sources(principal)
+
+    @app.post("/api/sources", response_model=Source, status_code=201)
+    def publish_source(
+        body: SourceInput, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> Source:
+        return platform.add_source(principal, body)
+
+    @app.delete("/api/sources/{source_id}", response_model=Source)
+    def retire_source(
+        source_id: str, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> Source:
+        return platform.retire_source(principal, source_id)
+
+    @app.post("/api/documents/extract")
+    def extract_file(
+        body: ExtractDocument, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> dict[str, object]:
+        try:
+            text = extract_document(body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {
+            "text": text,
+            "indicators": indicators(text),
+            "published": False,
+            "notice": "Extracted text is untrusted. Reviewer publication required.",
+        }
+
+    @app.post("/api/policy/inspect")
+    def inspect_policy(
+        body: PolicyProbe, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> dict[str, object]:
+        found = indicators(body.text)
+        allowed = (
+            body.destination == "local"
+            and body.classification.value == "internal"
+            and not (set(found) & {"credential", "private_key"})
+        )
+        return {
+            "allowed": allowed,
+            "indicators": found,
+            "external_processing_enabled": False,
+            "notice": "Heuristic indicators only; not enterprise DLP "
+            "or exhaustive PII detection.",
+        }
+
     @app.get("/api/sources/{source_id}", response_model=Source)
     def get_source(
         source_id: str, principal: Annotated[Principal, Depends(authenticate)]
@@ -204,6 +331,12 @@ def create_app(
     ) -> Proposal:
         return workflow.execute(principal, proposal_id)
 
+    @app.post("/api/proposals/{proposal_id}/reconcile")
+    def reconcile(
+        proposal_id: str, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> dict[str, object]:
+        return workflow.reconcile(principal, proposal_id)
+
     @app.post("/api/proposals/{proposal_id}/reject", response_model=Proposal)
     def reject(
         proposal_id: str, principal: Annotated[Principal, Depends(authenticate)]
@@ -237,6 +370,19 @@ def create_app(
             return store.run(principal, run.id)
         except AccessDenied:
             raise HTTPException(404, "Not found") from None
+
+    @app.post("/api/cases/invoice", status_code=201, response_model=Run)
+    def invoice_case(
+        body: InvoiceRequest, principal: Annotated[Principal, Depends(authenticate)]
+    ) -> Run:
+        return workflow.start_business(principal, body)
+
+    @app.post("/api/cases/infrastructure", status_code=201, response_model=Run)
+    def infrastructure_case(
+        body: InfrastructureRequest,
+        principal: Annotated[Principal, Depends(authenticate)],
+    ) -> Run:
+        return workflow.start_business(principal, body)
 
     @app.get("/api/runs/{run_id}", response_model=Run)
     def get_run(

@@ -15,6 +15,7 @@ class Mode(StrEnum):
 class Provider(StrEnum):
     FAKE = "fake"
     OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openai-compatible"
 
 
 class Settings(BaseSettings):

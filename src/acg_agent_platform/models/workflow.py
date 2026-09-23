@@ -66,6 +66,8 @@ class Evidence(Record):
 
 class Run(Record):
     framework: str = "langgraph"
+    use_case: str = "it_support"
+    agent_version: int = 1
     id: str
     owner_id: str
     workspace: str

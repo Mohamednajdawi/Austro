@@ -1,5 +1,7 @@
 # Readiness and external gates
 
+**v0.4.0:** All three local review workflows are available through LangGraph and the browser. See PLATFORM_RELEASE.md for current evidence and remaining work. Live enterprise connections, production security/compliance and scale readiness remain unfulfilled; no claim that the full challenge description is implemented.
+
 Prepared 2026-09-23. No platform purchase, ACG approval or submitting-company qualification is assumed.
 
 ## Observed environment

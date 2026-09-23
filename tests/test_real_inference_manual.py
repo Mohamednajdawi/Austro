@@ -1,6 +1,7 @@
 """Explicit live checks run separately from deterministic regression tests."""
 
 # This script is intentionally not a pytest test function: run directly on demand.
+import os
 import tempfile
 from pathlib import Path
 
@@ -14,7 +15,10 @@ from acg_agent_platform.services.store import Store
 def main() -> None:
     with tempfile.TemporaryDirectory() as folder:
         settings = Settings(
-            database_path=Path(folder) / "live.sqlite3", model_provider=Provider.OLLAMA
+            database_path=Path(folder) / "live.sqlite3",
+            model_provider=Provider.OPENAI_COMPATIBLE
+            if os.environ.get("ACG_TEST_COMPATIBLE") == "1"
+            else Provider.OLLAMA,
         )
         store = Store(settings.database_path)
         store.initialize()
@@ -54,7 +58,7 @@ def main() -> None:
                 assert response.status_code == 201
                 run = response.json()
                 assert run["state"] == "awaiting_review", run
-                assert run["model"].startswith("ollama/")
+                assert run["model"].startswith(("ollama/", "openai-compatible/"))
                 assert run["sources"], run
                 assert len(run["draft"]) > 40
                 print(f"LIVE PASS {language} / {title}: {run['draft']}")

@@ -1,0 +1,14 @@
+"use strict";
+function formObject(form){return Object.fromEntries(new FormData(form).entries());}
+async function showCase(result){await selectTicket(result.ticket_id);run=result;$("workView").hidden=false;$("reviewView").hidden=true;await renderRun();await refresh();$("runPanel").scrollIntoView({block:"center"});}
+$("invoiceForm").onsubmit=event=>{event.preventDefault();task(async()=>{await showCase(await api("/api/cases/invoice","POST",{...formObject(event.target),language:$("language").value}));});};
+$("infraForm").onsubmit=event=>{event.preventDefault();task(async()=>{await showCase(await api("/api/cases/infrastructure","POST",{...formObject(event.target),language:$("language").value}));});};
+$("catalogButton").onclick=()=>task(async()=>{const state=await api("/api/platform");$("catalog").replaceChildren(text("pre",JSON.stringify(state,null,2)));});
+$("monitorButton").onclick=()=>task(async()=>{$("catalog").replaceChildren(text("pre",JSON.stringify(await api("/api/monitoring"),null,2)));});
+$("searchForm").onsubmit=event=>{event.preventDefault();task(async()=>{const fields=formObject(event.target);const results=await api("/api/search?"+new URLSearchParams(fields));$("catalog").replaceChildren(text("pre",JSON.stringify(results,null,2)));});};
+$("agentForm").onsubmit=event=>{event.preventDefault();task(async()=>{const data=formObject(event.target);data.enabled=event.target.elements.enabled.checked;data.max_sources=Number(data.max_sources);const saved=await api("/api/agents","PUT",data);$("catalog").replaceChildren(text("pre",JSON.stringify(saved,null,2)));});};
+$("sourceForm").onsubmit=event=>{event.preventDefault();task(async()=>{const saved=await api("/api/sources","POST",{...formObject(event.target),allowed_roles:["support","reviewer"]});$("catalog").replaceChildren(text("pre",JSON.stringify({id:saved.id,classification:saved.classification},null,2)));});};
+$("extractForm").onsubmit=event=>{event.preventDefault();task(async()=>{const file=$("documentFile").files[0];if(!file||file.size>1000000)throw new Error("Choose a file under 1 MB");const bytes=new Uint8Array(await file.arrayBuffer());let binary="";for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));const result=await api("/api/documents/extract","POST",{filename:file.name,data_base64:btoa(binary)});$("sourceContent").value=result.text;$("catalog").replaceChildren(text("p",result.notice),text("pre",JSON.stringify(result.indicators)));});};
+// Sensitive extracted content is cleared on disconnect or identity switch.
+$("logout").addEventListener("click",()=>{if(!busy){$("catalog").replaceChildren();$("sourceContent").value="";$("documentFile").value="";}});
+$("login").addEventListener("submit",()=>{$("catalog").replaceChildren();$("sourceContent").value="";$("documentFile").value="";});

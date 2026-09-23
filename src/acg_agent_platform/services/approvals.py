@@ -15,6 +15,7 @@ from acg_agent_platform.models.approval import (
     ProposalState,
     ReviewEvent,
 )
+from acg_agent_platform.models.platform import AgentRevision
 from acg_agent_platform.models.records import (
     Classification,
     Principal,
@@ -225,6 +226,21 @@ class Approvals:
             raise Conflict("Approval window expired; create a new run")
         if action.policy_version != "internal-only-v1":
             raise Conflict("Policy changed")
+        row = db.execute(
+            "SELECT payload FROM runs WHERE id=?", (action.run_id,)
+        ).fetchone()
+        if row is None:
+            raise Conflict("Originating run unavailable")
+        run = Run.model_validate_json(row[0])
+        configured = db.execute(
+            "SELECT payload FROM agent_profiles WHERE workspace=? AND template=? "
+            "ORDER BY version DESC LIMIT 1",
+            (action.workspace, run.use_case),
+        ).fetchone()
+        if configured:
+            profile = AgentRevision.model_validate_json(configured[0])
+            if not profile.enabled or profile.version != run.agent_version:
+                raise Conflict("Agent configuration changed; create a new run")
         requester = self._principal(db, action.requester_id)
         self._sources(db, action, requester)
         self._sources(db, action, actor)

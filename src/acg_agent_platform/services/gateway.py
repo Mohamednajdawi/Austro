@@ -7,6 +7,7 @@ from importlib.resources import files
 
 from acg_agent_platform.models.records import Classification
 from acg_agent_platform.models.workflow import Envelope, Stage
+from acg_agent_platform.services.content_policy import indicators
 
 
 class PolicyDenied(Exception):
@@ -27,6 +28,8 @@ class InternalOnlyPolicy(BasePolicy):
         if envelope.classification != Classification.INTERNAL:
             raise PolicyDenied
         if len(envelope.text) > self.max_chars:
+            raise PolicyDenied
+        if set(indicators(envelope.text)) & {"credential", "private_key"}:
             raise PolicyDenied
 
 

@@ -36,10 +36,12 @@ class OllamaModel(BaseModelAdapter):
         timeout: float = 120,
         *,
         transport: httpx2.BaseTransport | None = None,
+        openai_compatible: bool = False,
     ) -> None:
         self.url = url.rstrip("/")
         self.model = model
-        self.name = f"ollama/{model}"
+        self.openai_compatible = openai_compatible
+        self.name = f"{'openai-compatible' if openai_compatible else 'ollama'}/{model}"
         self.timeout = timeout
         self.transport = transport
         self._slots = threading.BoundedSemaphore(1)
@@ -54,8 +56,15 @@ class OllamaModel(BaseModelAdapter):
             with httpx2.Client(
                 timeout=2, trust_env=False, transport=self.transport
             ) as client:
-                response = client.get(self.url + "/api/tags")
+                response = client.get(
+                    self.url + ("/v1/models" if self.openai_compatible else "/api/tags")
+                )
                 response.raise_for_status()
+                if self.openai_compatible:
+                    return any(
+                        item.get("id") == self.model
+                        for item in response.json().get("data", [])
+                    )
                 return any(
                     item.get("name") == self.model
                     for item in response.json().get("models", [])
@@ -92,6 +101,24 @@ class OllamaModel(BaseModelAdapter):
                 },
                 "keep_alive": "5m",
             }
+            endpoint = "/api/chat"
+            if self.openai_compatible:
+                endpoint = "/v1/chat/completions"
+                payload = {
+                    "model": self.model,
+                    "messages": payload["messages"],
+                    "stream": False,
+                    "temperature": 0,
+                    "max_tokens": 900,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "agent_output",
+                            "schema": schema,
+                            "strict": True,
+                        },
+                    },
+                }
             with (
                 httpx2.Client(
                     timeout=httpx2.Timeout(self.timeout, connect=3),
@@ -99,7 +126,7 @@ class OllamaModel(BaseModelAdapter):
                     follow_redirects=False,
                     transport=self.transport,
                 ) as client,
-                client.stream("POST", self.url + "/api/chat", json=payload) as response,
+                client.stream("POST", self.url + endpoint, json=payload) as response,
             ):
                 response.raise_for_status()
                 chunks = bytearray()
@@ -108,6 +135,11 @@ class OllamaModel(BaseModelAdapter):
                     if len(chunks) > 131072:
                         raise RuntimeError("Model response too large")
             data = json.loads(chunks)
+            if self.openai_compatible:
+                choice = data["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise RuntimeError("Incomplete compatible model response")
+                data = {"done": True, "message": choice["message"]}
             if data.get("done") is not True or data.get("done_reason") == "length":
                 raise RuntimeError("Incomplete model response")
             message = data.get("message", {})
@@ -117,7 +149,13 @@ class OllamaModel(BaseModelAdapter):
             if envelope.stage == Stage.DRAFT:
                 return self._grounded_note(envelope, content)
             return content
-        except (httpx2.HTTPError, KeyError, TypeError, AttributeError) as exc:
+        except (
+            httpx2.HTTPError,
+            KeyError,
+            IndexError,
+            TypeError,
+            AttributeError,
+        ) as exc:
             raise RuntimeError("Local inference unavailable") from exc
         finally:
             self._slots.release()

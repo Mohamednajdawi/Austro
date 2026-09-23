@@ -1,6 +1,7 @@
 """Immutable synthetic domain records."""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,6 +39,9 @@ class Ticket(Record):
 
 
 class Source(Record):
+    source_type: Literal["document", "incident", "log", "email", "wiki", "business"] = (
+        "document"
+    )
     id: str
     workspace: str
     title: str

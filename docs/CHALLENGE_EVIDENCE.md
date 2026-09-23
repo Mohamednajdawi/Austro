@@ -1,5 +1,7 @@
 # Challenge criteria and implementation evidence
 
+**Authoritative current matrix:** [v0.4.0 platform release](PLATFORM_RELEASE.md). Sections below describe earlier milestones. The release now includes local invoice/infrastructure review, document extraction, bounded template configuration and two local model API protocols. It still does not satisfy every enterprise requirement, and no perfect score is claimed.
+
 ## Current release: v0.2.0
 
 Working local AI pilot now delivered: actual Qwen classification and source-quote selection; server-verified evidence; browser ticket/source/review workspace; exact digest-bound separate-person approval; cancellation/rejection; atomic note append plus audit event; replay/concurrency protection. English/German live checks and a complete real-model Chromium flow passed. See [current release evidence](LOCAL_PILOT_RELEASE.md) and README for usage. The v0.1 matrix below is retained as historical context, not current feature status. Enterprise connectors, IdP, DLP, no-code authoring, HA, scale, certification and commercial readiness remain gaps.

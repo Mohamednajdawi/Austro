@@ -18,8 +18,10 @@ def test_browser_draft_review_execute(tmp_path: Path) -> None:
     store = Store(tmp_path / "browser.sqlite3")
     store.initialize()
     store.seed_demo()
+    store.seed_business_examples()
     alice_token = store.issue_session("alice", 3600)
     reviewer_token = store.issue_session("reviewer", 3600)
+    finance_token = store.issue_session("bob", 3600)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -79,6 +81,23 @@ def test_browser_draft_review_execute(tmp_path: Path) -> None:
             page.get_by_role("button", name="Execute approved sandbox note").click()
             expect(page.locator(".badge")).to_contain_text("executed")
             assert store.ticket(store.principal("alice"), "IT-001").notes == (draft,)
+            page.get_by_role("button", name="My run monitoring").click()
+            expect(page.locator("#catalog")).to_contain_text("own latest 100 runs")
+            page.get_by_text("Infrastructure / Infrastruktur", exact=True).click()
+            page.get_by_role("button", name="Analyze dependencies").click()
+            expect(page.locator("#runMeta")).to_contain_text(
+                "deterministic/business-tools-v1"
+            )
+            expect(page.locator("#draft")).to_contain_text("ASSET-APP")
+            expect(page.locator("#draft")).to_contain_text("No production change")
+            page.get_by_role("button", name="Disconnect", exact=True).click()
+            page.get_by_label("Session token", exact=True).fill(finance_token)
+            page.get_by_role("button", name="Connect", exact=True).click()
+            expect(page.locator("#secured")).to_be_visible()
+            page.get_by_text("Invoice review / Rechnungsprüfung", exact=True).click()
+            page.get_by_role("button", name="Prepare invoice review").click()
+            expect(page.locator("#draft")).to_contain_text("2400.00")
+            expect(page.locator("#draft")).to_contain_text("No payment")
             page.locator("#language").select_option("de")
             expect(page.locator("h1")).to_have_text(
                 "Arbeitsbereich für Unternehmensagenten"

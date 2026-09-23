@@ -1,6 +1,7 @@
 """Single-host synthetic persistence with explicit authorization boundaries."""
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import time
@@ -31,7 +32,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise RuntimeError("Unsupported demo database version")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS principals (
@@ -48,7 +49,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS proposals (
                     id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
                     payload TEXT NOT NULL);
-                PRAGMA user_version=2;
+                CREATE TABLE IF NOT EXISTS agent_profiles (
+                    workspace TEXT NOT NULL, template TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    payload TEXT NOT NULL, PRIMARY KEY(workspace, template, version));
+                PRAGMA user_version=3;
             """)
 
     def seed_demo(self) -> None:
@@ -265,6 +270,104 @@ class Store:
                     "INSERT OR IGNORE INTO sources VALUES (?, ?)",
                     (source.id, source.model_dump_json()),
                 )
+
+    def seed_business_examples(self) -> None:
+        """Provision synthetic business references without overwriting existing data."""
+        from datetime import date
+
+        examples = [
+            (
+                "PO-100",
+                "finance",
+                "purchase_order",
+                {
+                    "kind": "purchase_order",
+                    "supplier_id": "SUP-01",
+                    "total": "10000.00",
+                    "currency": "EUR",
+                    "cost_center": "FIN-OPS",
+                },
+            ),
+            (
+                "SUP-01",
+                "finance",
+                "supplier",
+                {
+                    "kind": "supplier",
+                    "supplier_id": "SUP-01",
+                    "bank_account": "AT611904300234573201",
+                },
+            ),
+            (
+                "CON-100",
+                "finance",
+                "contract",
+                {
+                    "kind": "contract",
+                    "supplier_id": "SUP-01",
+                    "ceiling": "10000.00",
+                    "currency": "EUR",
+                },
+            ),
+            (
+                "ASSET-EDGE",
+                "it",
+                "asset",
+                {
+                    "kind": "asset",
+                    "name": "Sandbox edge router",
+                    "depends_on": [],
+                    "safety_critical": False,
+                    "updated_at": date.today().isoformat(),
+                },
+            ),
+            (
+                "ASSET-APP",
+                "it",
+                "asset",
+                {
+                    "kind": "asset",
+                    "name": "Sandbox application",
+                    "depends_on": ["ASSET-EDGE"],
+                    "safety_critical": False,
+                    "updated_at": date.today().isoformat(),
+                },
+            ),
+        ]
+        with self._connect() as db:
+            principal = Principal(
+                id="finance-reviewer", workspace="finance", role=Role.REVIEWER
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO principals VALUES (?, ?)",
+                (principal.id, principal.model_dump_json()),
+            )
+            for sid, workspace, topic, content in examples:
+                source = Source(
+                    id=sid,
+                    workspace=workspace,
+                    title=sid,
+                    content=json.dumps(content),
+                    topic=topic,
+                    allowed_roles=(Role.SUPPORT, Role.REVIEWER),
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO sources VALUES (?, ?)",
+                    (source.id, source.model_dump_json()),
+                )
+
+    def all_sources(self, principal: Principal) -> tuple[Source, ...]:
+        current = self.principal(principal.id)
+        with self._connect() as db:
+            rows = db.execute("SELECT payload FROM sources ORDER BY id").fetchall()
+        sources = (Source.model_validate_json(row[0]) for row in rows)
+        return tuple(
+            s
+            for s in sources
+            if s.active
+            and s.workspace == current.workspace
+            and current.role in s.allowed_roles
+        )
 
     def source(self, principal: Principal, source_id: str) -> Source:
         current = self.principal(principal.id)

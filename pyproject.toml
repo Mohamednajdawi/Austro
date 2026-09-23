@@ -1,6 +1,6 @@
 [project]
 name = "acg-agent-platform"
-version = "0.3.0"
+version = "0.4.0"
 description = "Synthetic enterprise agent control demonstrator"
 requires-python = ">=3.11,<3.14"
 dependencies = [
@@ -11,6 +11,7 @@ dependencies = [
     "httpx2==2.13.1",
     "langgraph>=1.0,<2",
     "langgraph-checkpoint-sqlite>=3,<4",
+    "pypdf>=6,<7",
 ]
 
 [dependency-groups]

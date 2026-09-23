@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from acg_agent_platform.config import Settings
 from acg_agent_platform.models.approval import Proposal, ProposalState
+from acg_agent_platform.models.business import InfrastructureRequest, InvoiceRequest
 from acg_agent_platform.models.records import Classification, Principal
 from acg_agent_platform.models.workflow import (
     Citation,
@@ -33,12 +34,14 @@ from acg_agent_platform.models.workflow import (
     StartRun,
 )
 from acg_agent_platform.services.approvals import Approvals, Conflict
+from acg_agent_platform.services.business import BusinessTools
 from acg_agent_platform.services.gateway import (
     BaseModelAdapter,
     BasePolicy,
     ModelGateway,
     PolicyDenied,
 )
+from acg_agent_platform.services.platform import Platform
 from acg_agent_platform.services.store import AccessDenied, Store
 
 
@@ -50,6 +53,7 @@ class AgentState(TypedDict, total=False):
     proposal_id: str
     execution_actor: str
     completed: bool
+    business_request: str
 
 
 class Workflow:
@@ -76,12 +80,21 @@ class Workflow:
         with SqliteSaver.from_conn_string(self.checkpoint_path) as saver:
             builder = StateGraph(AgentState)
             builder.add_node("classification_agent", self._classification_node)
+            builder.add_node("business_specialist", self._business_node)
             builder.add_node("knowledge_tool", self._retrieval_node)
             builder.add_node("evidence_agent", self._draft_node)
             builder.add_node("publish", self._publish)
             builder.add_node("human_review", self._human_review)
             builder.add_node("approved_tool", self._execute)
-            builder.add_edge(START, "classification_agent")
+            builder.add_conditional_edges(
+                START,
+                self._entry,
+                {
+                    "it_support": "classification_agent",
+                    "business": "business_specialist",
+                },
+            )
+            builder.add_edge("business_specialist", "publish")
             builder.add_conditional_edges(
                 "classification_agent",
                 self._route,
@@ -108,6 +121,7 @@ class Workflow:
         }
 
     def start(self, principal: Principal, request: StartRun) -> Run:
+        profile = Platform(self.store).profile(principal, "it_support")
         ticket = self.store.ticket(principal, request.ticket_id)
         run = Run(
             id=str(uuid4()),
@@ -122,6 +136,7 @@ class Workflow:
             model=self.model.name,
             model_calls=0,
             workflow_version="langgraph-it-v1",
+            agent_version=profile.version,
             evidence=(),
         )
         with tracing_context(enabled=False), self._graph() as graph:
@@ -157,6 +172,7 @@ class Workflow:
                 "completed": bool(snapshot.values.get("completed")),
                 "nodes": [
                     "classification_agent",
+                    "business_specialist",
                     "knowledge_tool",
                     "evidence_agent",
                     "publish",
@@ -164,6 +180,112 @@ class Workflow:
                     "approved_tool",
                 ],
             }
+
+    def start_business(
+        self, principal: Principal, request: InvoiceRequest | InfrastructureRequest
+    ) -> Run:
+        principal = self.store.principal(principal.id)
+        if isinstance(request, InvoiceRequest):
+            # Preflight permission checks before creating an intake ticket.
+            for sid in (
+                request.order_source_id,
+                request.supplier_source_id,
+                request.contract_source_id,
+            ):
+                self.store.source(principal, sid)
+            title, case = f"Invoice {request.invoice_id}", "invoice"
+        else:
+            self.store.source(principal, request.asset_source_id)
+            title, case = f"Change request {request.asset_source_id}", "infrastructure"
+        profile = Platform(self.store).profile(principal, case)
+        ticket = self.store.create_ticket(principal, title, request.model_dump_json())
+        run = Run(
+            id=str(uuid4()),
+            owner_id=principal.id,
+            workspace=principal.workspace,
+            ticket_id=ticket.id,
+            ticket_version=ticket.version,
+            language=request.language,
+            state=RunState.AWAITING_REVIEW,
+            draft="",
+            sources=(),
+            model="deterministic/business-tools-v1",
+            model_calls=0,
+            workflow_version="langgraph-business-v1",
+            use_case=case,
+            agent_version=profile.version,
+            evidence=(),
+        )
+        with tracing_context(enabled=False), self._graph() as graph:
+            output = graph.invoke(
+                {
+                    "run_json": run.model_dump_json(),
+                    "ticket_json": ticket.model_dump_json(),
+                    "business_request": request.model_dump_json(),
+                    "completed": False,
+                },
+                self._config(run.id),
+                durability="sync",
+            )
+        return Run.model_validate_json(output["run_json"])
+
+    def _entry(self, state: AgentState) -> str:
+        return (
+            "it_support"
+            if Run.model_validate_json(state["run_json"]).use_case == "it_support"
+            else "business"
+        )
+
+    def _business_node(self, state: AgentState) -> AgentState:
+        return self._guard(self._business)(state)
+
+    def _business(self, state: AgentState) -> AgentState:
+        run = Run.model_validate_json(state["run_json"])
+        actor = self.store.principal(run.owner_id)
+        tools = BusinessTools(self.store)
+        if run.use_case == "invoice":
+            report, sources = tools.invoice(
+                actor, InvoiceRequest.model_validate_json(state["business_request"])
+            )
+        else:
+            report, sources = tools.infrastructure(
+                actor,
+                InfrastructureRequest.model_validate_json(state["business_request"]),
+            )
+        self.policy.inspect(
+            Envelope(
+                stage=Stage.DRAFT,
+                language=run.language,
+                text=report,
+                classification=Classification.INTERNAL,
+            )
+        )
+        for source in sources:
+            if self.store.source(actor, source.id) != source:
+                raise PolicyDenied
+        run = run.model_copy(
+            update={
+                "draft": report,
+                "sources": tuple(
+                    Citation(
+                        id=s.id,
+                        version=s.version,
+                        fingerprint=hashlib.sha256(
+                            s.model_dump_json().encode()
+                        ).hexdigest(),
+                    )
+                    for s in sources
+                ),
+                "evidence": (
+                    Evidence(
+                        stage=f"{run.use_case}_tools",
+                        outcome="review_required",
+                        timestamp=time.time(),
+                    ),
+                ),
+            }
+        )
+        return {"run_json": run.model_dump_json(), "business_request": ""}
 
     def execute(self, actor: Principal, proposal_id: str) -> Proposal:
         proposal = self.approvals.get(actor, proposal_id)
@@ -183,6 +305,26 @@ class Workflow:
                 durability="sync",
             )
         return self.approvals.get(actor, proposal_id)
+
+    def reconcile(self, actor: Principal, proposal_id: str) -> dict[str, object]:
+        """Reconcile only when the action ledger proves execution already committed."""
+        proposal = self.approvals.get(actor, proposal_id)
+        if proposal.state != ProposalState.EXECUTED:
+            raise Conflict("Only an already executed action can be reconciled")
+        with tracing_context(enabled=False), self._graph() as graph:
+            config = self._config(proposal.action.run_id)
+            snapshot = graph.get_state(config)
+            if not snapshot.values:
+                return {"reconciled": True, "legacy": True}
+            if snapshot.values.get("completed"):
+                return {"reconciled": True, "already_complete": True}
+            if (
+                snapshot.next != ("approved_tool",)
+                or snapshot.values.get("proposal_id") != proposal_id
+            ):
+                raise Conflict("Checkpoint needs operator investigation")
+            graph.invoke(None, config, durability="sync")
+            return {"reconciled": True, "already_complete": False}
 
     def _classification_node(self, state: AgentState) -> AgentState:
         return self._guard(self._classify)(state)
@@ -257,7 +399,10 @@ class Workflow:
         run = Run.model_validate_json(state["run_json"])
         principal = self.store.principal(run.owner_id)
         sources = self.store.sources(principal, state["category"])[
-            : self.settings.max_sources
+            : min(
+                self.settings.max_sources,
+                Platform(self.store).profile(principal, "it_support").max_sources,
+            )
         ]
         return {
             "source_ids": [s.id for s in sources],

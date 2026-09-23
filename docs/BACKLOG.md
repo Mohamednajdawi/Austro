@@ -1,5 +1,7 @@
 # Sequential implementation backlog
 
+**Current status:** v0.4.0 adds local invoice and infrastructure review branches, document extraction, source management, template revisions, policy indicators, local model API compatibility, monitoring and narrow recovery reconciliation. See PLATFORM_RELEASE.md for the authoritative capability/gap matrix. Earlier S01–S08 estimates below are historical planning, not a completion claim.
+
 Implementation update v0.2.0: S01 complete for synthetic scope; S02/S03 include real local inference and evidence verification; S04 exact-action local approval/execution is delivered; S05 has a working DE/EN browser interface and Chromium end-to-end test. These are local-pilot subsets, not enterprise acceptance. Estimates below are original planning ranges, not remaining-work commitments.
 
 Remaining: deletion/retention policy, incremental trusted audit, global wall-clock deadlines and quotas, larger bilingual corpus, durable mid-run cancellation/recovery, source integration, independent accessibility validation and enterprise operations. Source-content fingerprints, exact action approval, cancellation/rejection and transactional note append now exist. S06 infrastructure workflow and S07/S08 enterprise integration/operations remain pending. See LOCAL_PILOT_RELEASE.md.
