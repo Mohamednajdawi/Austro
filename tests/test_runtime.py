@@ -131,7 +131,7 @@ def test_actual_loopback_server_can_authenticate_and_draft(tmp_path: Path) -> No
             run = json.load(response)
             assert response.status == 201
             assert run["state"] == "awaiting_review"
-            assert run["model_calls"] == 2
+            assert run["model_calls"] == 4
     finally:
         process.terminate()
         try:

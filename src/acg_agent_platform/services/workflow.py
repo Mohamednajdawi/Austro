@@ -28,10 +28,14 @@ from acg_agent_platform.models.workflow import (
     DraftResult,
     Envelope,
     Evidence,
+    Finding,
+    JudgeResult,
     Run,
     RunState,
+    Screening,
     Stage,
     StartRun,
+    Verdict,
 )
 from acg_agent_platform.services.approvals import Approvals, Conflict
 from acg_agent_platform.services.business import BusinessTools
@@ -83,6 +87,7 @@ class Workflow:
             builder.add_node("business_specialist", self._business_node)
             builder.add_node("knowledge_tool", self._retrieval_node)
             builder.add_node("evidence_agent", self._draft_node)
+            builder.add_node("injection_judge", self._judge_node)
             builder.add_node("publish", self._publish)
             builder.add_node("human_review", self._human_review)
             builder.add_node("approved_tool", self._execute)
@@ -94,7 +99,11 @@ class Workflow:
                     "business": "business_specialist",
                 },
             )
-            builder.add_edge("business_specialist", "publish")
+            builder.add_conditional_edges(
+                "business_specialist",
+                self._route,
+                {"continue": "injection_judge", "stop": "publish"},
+            )
             builder.add_conditional_edges(
                 "classification_agent",
                 self._route,
@@ -105,7 +114,12 @@ class Workflow:
                 self._route,
                 {"continue": "evidence_agent", "stop": "publish"},
             )
-            builder.add_edge("evidence_agent", "publish")
+            builder.add_conditional_edges(
+                "evidence_agent",
+                self._route,
+                {"continue": "injection_judge", "stop": "publish"},
+            )
+            builder.add_edge("injection_judge", "publish")
             builder.add_conditional_edges(
                 "publish", self._route, {"continue": "human_review", "stop": END}
             )
@@ -175,6 +189,7 @@ class Workflow:
                     "business_specialist",
                     "knowledge_tool",
                     "evidence_agent",
+                    "injection_judge",
                     "publish",
                     "human_review",
                     "approved_tool",
@@ -334,6 +349,92 @@ class Workflow:
 
     def _draft_node(self, state: AgentState) -> AgentState:
         return self._guard(self._draft)(state)
+
+    def _judge_node(self, state: AgentState) -> AgentState:
+        return self._guard(self._judge)(state)
+
+    def _judge(self, state: AgentState) -> AgentState:
+        """Screen the ticket and each cited source separately; advisory only."""
+        run = Run.model_validate_json(state["run_json"])
+        principal = self.store.principal(run.owner_id)
+        ticket = self.store.ticket(principal, run.ticket_id)
+        if ticket.model_dump_json() != state["ticket_json"]:
+            raise PolicyDenied
+        findings = [
+            self._screen(
+                state,
+                Finding(kind="ticket", item=ticket.id, verdict=Verdict.UNAVAILABLE),
+                ticket.classification,
+                {"title": ticket.title, "description": ticket.description},
+            )
+        ]
+        for index, citation in enumerate(run.sources):
+            source = self.store.source(principal, citation.id)
+            if (
+                source.version != citation.version
+                or hashlib.sha256(source.model_dump_json().encode()).hexdigest()
+                != citation.fingerprint
+            ):
+                raise PolicyDenied
+            pending = Finding(
+                kind="source", item=source.id, verdict=Verdict.UNAVAILABLE
+            )
+            # Sources beyond the per-run limit stay visibly unscreened.
+            findings.append(
+                pending
+                if index >= self.settings.max_sources
+                else self._screen(
+                    state,
+                    pending,
+                    source.classification,
+                    {"title": source.title, "content": source.content},
+                )
+            )
+        verdicts = {finding.verdict for finding in findings}
+        verdict = next(
+            candidate
+            for candidate in (Verdict.SUSPICIOUS, Verdict.UNAVAILABLE, Verdict.CLEAN)
+            if candidate in verdicts
+        )
+        run = Run.model_validate_json(self._event(state, "judge", verdict.value))
+        screening = Screening(
+            judge=self.model.name, verdict=verdict, findings=tuple(findings)
+        )
+        return {
+            "run_json": run.model_copy(
+                update={"screening": screening}
+            ).model_dump_json()
+        }
+
+    def _screen(
+        self,
+        state: AgentState,
+        pending: Finding,
+        classification: Classification,
+        fields: dict[str, str],
+    ) -> Finding:
+        run = Run.model_validate_json(state["run_json"])
+        try:
+            result = JudgeResult.model_validate_json(
+                self._invoke(
+                    state,
+                    Envelope(
+                        stage=Stage.JUDGE,
+                        language=run.language,
+                        text=json.dumps(fields, ensure_ascii=False),
+                        classification=classification,
+                    ),
+                )
+            )
+        except (PolicyDenied, TimeoutError, ValidationError, ValueError, RuntimeError):
+            return pending
+        suspicious = result.verdict == "suspicious" or bool(result.signals)
+        return pending.model_copy(
+            update={
+                "verdict": Verdict.SUSPICIOUS if suspicious else Verdict.CLEAN,
+                "signals": result.signals,
+            }
+        )
 
     def _guard(
         self, node: Callable[[AgentState], AgentState]

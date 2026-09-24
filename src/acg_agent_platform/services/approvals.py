@@ -94,6 +94,7 @@ class Approvals:
                 ticket_version=ticket.version,
                 note=run.draft,
                 sources=run.sources,
+                screening=run.screening,
                 expires_at=self.clock() + self.lifetime,
             )
             proposal = Proposal(

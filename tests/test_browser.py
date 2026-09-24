@@ -60,6 +60,7 @@ def test_browser_draft_review_execute(tmp_path: Path) -> None:
             page.get_by_role("button", name="Generate source-backed draft").click()
             expect(page.locator("#runPanel")).to_be_visible(timeout=240000)
             expect(page.locator("#runMeta")).to_contain_text("awaiting_review")
+            expect(page.locator("#runScreening .screening")).to_be_visible()
             draft = page.locator("#draft").inner_text()
             assert len(draft) > 30
             if environment["MODEL_PROVIDER"] == "ollama":
@@ -67,6 +68,7 @@ def test_browser_draft_review_execute(tmp_path: Path) -> None:
                 assert "Synthetic draft" not in draft
             page.get_by_role("button", name="Send exact note for approval").click()
             expect(page.locator(".proposal")).to_have_count(1)
+            expect(page.locator(".proposal .screening")).to_be_visible()
             expect(
                 page.get_by_role("button", name="Approve exact action")
             ).to_have_count(0)

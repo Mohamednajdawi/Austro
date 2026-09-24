@@ -34,7 +34,7 @@ def test_draft_uses_only_authorized_sources_and_stops_for_review(
         assert [source["id"] for source in run["sources"]] == ["KB-VPN"]
         assert "KB-RESTRICTED" not in response.text
         assert "KB-FIN" not in response.text
-        assert run["model_calls"] == 2
+        assert run["model_calls"] == 4
         assert "Prüfung" in run["draft"]
         assert client.get("/api/tickets/IT-001", headers=headers).json() == before
         saved = client.get(f"/api/runs/{run['id']}", headers=headers)
@@ -69,11 +69,16 @@ def test_unauthorized_content_never_reaches_model(tmp_path: Path) -> None:
             "/api/runs", headers=headers, json={"ticket_id": "IT-001"}
         )
     assert response.status_code == 201
-    assert len(model.received) == 2
-    context = model.received[1].text
-    assert "KB-VPN" in context
-    assert "Restricted synthetic" not in context
-    assert "Finance-only" not in context
+    assert [envelope.stage for envelope in model.received] == [
+        Stage.CLASSIFY,
+        Stage.DRAFT,
+        Stage.JUDGE,
+        Stage.JUDGE,
+    ]
+    assert "KB-VPN" in model.received[1].text
+    for envelope in model.received:
+        assert "Restricted synthetic" not in envelope.text
+        assert "Finance-only" not in envelope.text
 
 
 def test_accessible_but_restricted_context_blocks_second_model_call(
@@ -202,7 +207,7 @@ def test_no_evidence_yields_uncertainty_not_invented_answer(tmp_path: Path) -> N
         ).json()
     assert "Insufficient" in run["draft"]
     assert run["sources"] == []
-    assert run["model_calls"] == 1
+    assert run["model_calls"] == 2
 
 
 def test_unknown_classification_is_denied_before_drafting(tmp_path: Path) -> None:

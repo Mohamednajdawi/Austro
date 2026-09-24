@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import Field
 
 from acg_agent_platform.models.records import Record
-from acg_agent_platform.models.workflow import Citation
+from acg_agent_platform.models.workflow import Citation, Screening
 
 
 class ProposalState(StrEnum):
@@ -27,6 +27,7 @@ class Action(Record):
     ticket_version: int
     note: str
     sources: tuple[Citation, ...]
+    screening: Screening | None = None
     policy_version: str = "internal-only-v1"
     expires_at: float
 

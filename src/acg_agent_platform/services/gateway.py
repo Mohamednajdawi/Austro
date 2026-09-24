@@ -52,6 +52,14 @@ class FakeModel(BaseModelAdapter):
         if envelope.stage == Stage.CLASSIFY:
             category = "vpn" if "vpn" in envelope.text.casefold() else "unknown"
             return json.dumps({"category": category})
+        if envelope.stage == Stage.JUDGE:
+            flagged = "ignore previous instructions" in envelope.text.casefold()
+            return json.dumps(
+                {
+                    "verdict": "suspicious" if flagged else "clean",
+                    "signals": ["instruction_override"] if flagged else [],
+                }
+            )
         return json.dumps({"draft": self.prompts[envelope.language.value]})
 
 

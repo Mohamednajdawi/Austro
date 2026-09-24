@@ -16,6 +16,7 @@ This is the current release status and supersedes older planning/status sections
 | Search | Permission-filtered title/content substring search by source type | Not semantic search, historical incident resolution or automated log correlation |
 | Model flexibility | Native Ollama and OpenAI-compatible local HTTP API, same schemas and grounding checks | Both validated with local Qwen, not separate vendors; external destinations remain blocked |
 | Content inspection | Classification/length gates plus email/IBAN/credential/private-key heuristics; policy preview | Not exhaustive PII detection, certified DLP, external model routing or SIEM integration |
+| Injection judge | Local model screens the ticket and each cited source separately before review; enum-only verdicts are stored on the run, bound into the approval digest and shown to the reviewer; flagged approvals need confirmation | Advisory only, never blocks or approves; small model can miss or be manipulated; detection rate unmeasured; items beyond 1 + MAX_SOURCES reported unscreened |
 | Monitoring | Owner-scoped run metadata, model-call counts and proposal states | No cross-user executive dashboard, billing, token usage or live streaming |
 | Recovery | Resume after human review; reconcile committed action when final checkpoint fails | Not distributed HA or arbitrary failed-node recovery |
 | UI | Existing DE/EN IT/review UI, bilingual-labeled business forms, sources/configuration/search/monitoring | New forms/report messages not fully localized; accessibility certification absent |

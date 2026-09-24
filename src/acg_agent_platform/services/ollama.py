@@ -12,6 +12,7 @@ from acg_agent_platform.models.workflow import (
     ClassificationResult,
     DraftResult,
     Envelope,
+    JudgeResult,
     Stage,
 )
 from acg_agent_platform.services.gateway import BaseModelAdapter
@@ -76,13 +77,12 @@ class OllamaModel(BaseModelAdapter):
         if not self._slots.acquire(blocking=False):
             raise RuntimeError("Local model busy; retry after current run")
         try:
-            schema = (
-                ClassificationResult
-                if envelope.stage == Stage.CLASSIFY
-                else DraftResult
-            ).model_json_schema()
-            if envelope.stage == Stage.DRAFT:
-                schema = GroundedSelection.model_json_schema()
+            contracts: dict[Stage, type[BaseModel]] = {
+                Stage.CLASSIFY: ClassificationResult,
+                Stage.DRAFT: GroundedSelection,
+                Stage.JUDGE: JudgeResult,
+            }
+            schema = contracts[envelope.stage].model_json_schema()
             instructions = str(self.prompts[envelope.stage.value])
             instructions += f"\nRespond in {envelope.language.value}. JSON only."
             payload = {

@@ -1,6 +1,7 @@
 """Typed model and workflow contracts with no action authority."""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field
 
@@ -15,6 +16,7 @@ class Language(StrEnum):
 class Stage(StrEnum):
     CLASSIFY = "classify"
     DRAFT = "draft"
+    JUDGE = "judge"
 
 
 class RunState(StrEnum):
@@ -58,6 +60,41 @@ class DraftResult(Record):
     draft: str = Field(strict=True, min_length=1, max_length=8000)
 
 
+class Verdict(StrEnum):
+    CLEAN = "clean"
+    SUSPICIOUS = "suspicious"
+    UNAVAILABLE = "unavailable"
+
+
+class Signal(StrEnum):
+    INSTRUCTION_OVERRIDE = "instruction_override"
+    ROLE_IMPERSONATION = "role_impersonation"
+    ACTION_REQUEST = "action_request"
+    DATA_EXFILTRATION = "data_exfiltration"
+    OUTPUT_MANIPULATION = "output_manipulation"
+
+
+class JudgeResult(Record):
+    verdict: Literal["clean", "suspicious"]
+    signals: tuple[Signal, ...] = Field(max_length=5)
+
+
+class Finding(Record):
+    kind: Literal["ticket", "source"]
+    item: str
+    verdict: Verdict
+    signals: tuple[Signal, ...] = ()
+
+
+class Screening(Record):
+    """Advisory judge output; it never grants, blocks or executes an action."""
+
+    judge: str
+    prompt_version: str = "judge-v1"
+    verdict: Verdict
+    findings: tuple[Finding, ...]
+
+
 class Evidence(Record):
     stage: str
     outcome: str
@@ -83,3 +120,4 @@ class Run(Record):
     policy_version: str = "internal-only-v1"
     prompt_version: str = "draft-v1"
     evidence: tuple[Evidence, ...]
+    screening: Screening | None = None

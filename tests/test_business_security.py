@@ -84,7 +84,8 @@ def test_invoice_discrepancies_are_deterministic(setup, changes, expected) -> No
         "/api/cases/invoice", json={**INVOICE, **changes}, headers=headers["bob"]
     ).json()
     assert expected in run["draft"]
-    assert run["model_calls"] == 0
+    assert run["model"] == "deterministic/business-tools-v1"
+    assert run["model_calls"] == len(run["screening"]["findings"])
 
 
 def test_invalid_money_and_cross_workspace_sources_rejected(setup) -> None:
